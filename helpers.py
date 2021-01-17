@@ -156,7 +156,7 @@ def giveOneAnswer(chatID, answers_obj_list):
 
 def answerQuery(incoming_message, update):
 
-    global model, questions_text_list, userid_answers_dict
+    global model, questions_text_list, userid_answers_dict, unanswered_questions
 
     msg_embeddings = model([incoming_message] + questions_text_list)
     answers_obj_list = findAnswer(msg_embeddings)
@@ -164,7 +164,8 @@ def answerQuery(incoming_message, update):
     # Above code updates answers_obj_list through the NLP model.
     
     if len(answers_obj_list) == 0:
-        message="This Question hasn't yet been answered. Try a Google search: "
+        unanswered_questions.append(incoming_message)
+        message="This Question hasn't yet been answered. I will ask my creators to answer it.\nTry a Google search till then:\n"
         search_url='https://www.google.com/search?q={}'.format(url.quote(incoming_message))
         sendMessage(getChatID(update), message+search_url)
     else:
@@ -341,7 +342,7 @@ def updateCSV():
 
     with open('./smalltalk.csv', mode='w', encoding='utf-8-sig', newline='') as smalltalk:
         writer = csv.writer(smalltalk, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-        
+        writer.writerow(['Question', 'Answers'])
         for obj in small_dict:
 
             ques = obj['Question']
@@ -358,11 +359,34 @@ def updateCSV():
     print('\nCSV Update Completed Successfully !!\n')
 
 
+@tl.job(interval=timedelta(seconds=600))            # This decorator enables this function to execute every 30 min
+def updateSpreadSheet():
+
+    '''
+        Flushes unsered questions to a different spreadsheet.
+        This runs on a seperate thread.
+    '''
+
+    global unanswered_questions
+
+    gc = gspread.service_account()
+
+    print('\nSpreadSheet update in progress...\n')
+    sht = gc.open_by_url('https://docs.google.com/spreadsheets/d/15kexJqY8idu66aJ7kOqClOdYYVfV7x8xDlVp7t6_b8w/edit#gid=0')
+    worksht = sht.get_worksheet(0)
+    
+    for ques in unanswered_questions:
+        worksht.append_row([ques])
+    
+    unanswered_questions = []
+    
+    print('\nSpreadSheet Update Completed Successfully !!\n')
+
+
 def signal_handler(sig, frame):
     global tl
     tl.stop()
     sys.exit(0)
-
 
 small_talk = pd.read_csv('./smalltalk.csv', sep=',')
 
@@ -372,6 +396,7 @@ small_talk_answers = list(small_talk['Answers'])
 client = MongoClient('localhost', 27017)
 
 print ('\nLoading NLP Model...\n')
+print('\nIf you are running it the first time, it might take a few minutes to download the model\n')
 module_url = "https://tfhub.dev/google/universal-sentence-encoder/4" #@param ["https://tfhub.dev/google/universal-sentence-encoder/4", "https://tfhub.dev/google/universal-sentence-encoder-large/5"]
 model = hub.load(module_url)
 print ('\nNLP model loaded successfully !\n')
@@ -385,6 +410,7 @@ questions_obj_list = [obj for obj in collection_questions.find()]
 questions_text_list = [obj['text'] for obj in questions_obj_list]
 
 userid_answers_dict = {}                    # this dict stores an list of answers specfic to one user.
+unanswered_questions = []                   # this list stores unanswered questions to be flushed into sheets every 30 minutes.
 
 tl.start()
 
